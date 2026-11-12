@@ -76,14 +76,20 @@ def draw_poses(frame, pose_landmarks_list):
 # Fighter tracker boxes
 # ---------------------------------------------------------------------------
 
-def draw_tracker_boxes(frame, boxes, guard_results=None):
+def draw_tracker_boxes(frame, boxes, guard_results=None, stale=None):
     """
     Draw labelled bounding boxes for the two tracked fighters.
     boxes: list of two [x1, y1, x2, y2].
     guard_results: optional list of two GuardResult (or None) from guards.py.
+    stale: optional list of two bools; a stale fighter (not seen for a while)
+           gets a "LOST" note in the corner instead of a box at an old position.
     """
     labels = ["Fighter A", "Fighter B"]
     for i, (box, color) in enumerate(zip(boxes, _FIGHTER_COLORS)):
+        if stale and stale[i]:
+            cv2.putText(frame, f"{labels[i]}: LOST", (12, 30 + 28 * i),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
+            continue
         x1, y1, x2, y2 = box
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, _BOX_WIDTH)
         cv2.putText(frame, labels[i], (x1 + 4, y1 + 20),

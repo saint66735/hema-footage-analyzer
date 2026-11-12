@@ -34,10 +34,11 @@ def _scan_for_seed(reader, person_detector, max_frames=500):
     return None, [], 0
 
 
-def select_fighters(reader, person_detector, output_path):
+def select_fighters(reader, person_detector, output_path, preset=None):
     """
     Display a seed frame with numbered person bounding boxes, prompt the user to
     pick the two that are the actual fighters, and return their boxes.
+    preset: optional (a, b) indices to skip the prompt (e.g. re-running a clip).
     """
     frame, boxes, frame_idx = _scan_for_seed(reader, person_detector)
 
@@ -58,6 +59,13 @@ def select_fighters(reader, person_detector, output_path):
     seed_path = os.path.splitext(output_path)[0] + "_seed.jpg"
     cv2.imwrite(seed_path, annotated)
     print(f"Seed frame saved to: {seed_path}")
+
+    if preset is not None:
+        a, b = preset
+        if not (0 <= a < len(boxes) and 0 <= b < len(boxes) and a != b):
+            sys.exit(f"Error: --fighters {a} {b} is invalid; seed frame has boxes 0–{len(boxes) - 1}.")
+        print(f"  Seeding tracker from --fighters: Fighter A = box {a}, Fighter B = box {b}.\n")
+        return boxes[a], boxes[b], frame
 
     # Attempt interactive display (non-fatal if no display available)
     try:
@@ -99,6 +107,9 @@ def parse_args():
                    help="Path for output annotated video (default: ./output/<input_stem>_annotated.mp4)")
     p.add_argument("--max-frames", type=int, default=None,
                    help="Only process the first N frames (for quick tests on long fights)")
+    p.add_argument("--fighters", type=int, nargs=2, metavar=("A", "B"), default=None,
+                   help="Seed-frame box numbers of the two fighters, to skip the prompt "
+                        "(the numbers are shown in output/<name>_annotated_seed.jpg)")
     return p.parse_args()
 
 
@@ -132,7 +143,7 @@ def main():
     guard_trackers   = [guards_mod.GuardTracker(), guards_mod.GuardTracker()]
 
     # --- Fighter selection ---
-    box_a, box_b, seed_frame = select_fighters(reader, person_detector, args.output)
+    box_a, box_b, seed_frame = select_fighters(reader, person_detector, args.output, args.fighters)
     reader.reset()  # rewind to process every frame from the start
     tracker = FighterTracker(box_a, box_b, seed_frame)
 
@@ -168,11 +179,16 @@ def main():
                 track_detections = {}
 
             fighter_boxes, matched = tracker.update(track_detections, frame)
+            stale = tracker.stale
 
             # Per-fighter pose (keyed by fighter index)
             timestamp_ms     = int(frame_idx * 1000 / reader.fps)
             per_fighter_lms  = [None, None]
             for i, box in enumerate(fighter_boxes):
+                if stale[i]:
+                    # Fighter not seen for a while: the box is an old position,
+                    # so running pose there would only find background/bystanders.
+                    continue
                 try:
                     lms = pose_detectors[i].detect_in_box(frame, box, timestamp_ms)
                 except Exception as exc:
@@ -214,7 +230,7 @@ def main():
                          fighter_boxes, guard_results)
 
             # Draw
-            draw_tracker_boxes(frame, fighter_boxes, guard_results)
+            draw_tracker_boxes(frame, fighter_boxes, guard_results, stale)
             draw_poses(frame, poses)
             draw_weapon_results(frame, all_weapon_results)
             writer.write(frame)
@@ -232,6 +248,7 @@ def main():
     print(f"A vis mean          : {sm['a_vis_mean']}     B vis mean   : {sm['b_vis_mean']}")
     print(f"A jitter mean (px)  : {sm['a_jitter_mean']}   B jitter mean: {sm['b_jitter_mean']}")
     print(f"A weapon%           : {sm['a_weapon_%']}%   B weapon%    : {sm['b_weapon_%']}%")
+    print(f"A arms usable       : {sm['a_arm_ok_%']}%   B arms usable: {sm['b_arm_ok_%']}%   (of frames with a pose)")
     print(f"Stats CSV           : {stats.path}")
     print(f"Output video        : {args.output}")
 

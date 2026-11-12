@@ -23,6 +23,17 @@ class StatsCollector:
         Minimum landmark visibility.
     a_jitter, b_jitter
         Average pixel distance each landmark moved vs the previous detected frame.
+    a_wrist_vis, b_wrist_vis
+        Lower of the two wrist visibilities (0–1). Low = at least one hand lost.
+    a_wrist_jump, b_wrist_jump
+        Largest wrist movement since the previous pose frame, in torso lengths
+        (shoulder-to-hip). Values above ~0.6 in a single frame are physically
+        implausible and almost always mean the wrist landmark jumped to the
+        wrong place.
+    a_arm_ok, b_arm_ok
+        1 = both wrists and both elbows have visibility >= 0.5 AND neither wrist
+        jumped implausibly. Empty when no pose. This is the "are the arms usable
+        for blade work" signal summarised at the end of a run.
     a_weapon, b_weapon
         1 = at least one weapon line was detected near this fighter's wrist.
     a_guard, b_guard
@@ -44,6 +55,9 @@ class StatsCollector:
     # Wrist landmark indices in MediaPipe's 33-point model
     _LM_WRISTS = (15, 16)   # left wrist, right wrist
     _MIN_WRIST_VIS = 0.20
+    _LM_ELBOWS = (13, 14)
+    _ARM_VIS_OK = 0.50
+    _WRIST_JUMP_MAX = 0.60   # torso lengths per frame
 
     def __init__(self, input_path, output_dir, fps, frame_w, frame_h):
         stem = os.path.splitext(os.path.basename(input_path))[0]
@@ -74,11 +88,18 @@ class StatsCollector:
                 row[f"{label}_vis_mean"] = round(sum(vis) / len(vis), 3)
                 row[f"{label}_vis_min"]  = round(min(vis), 3)
                 row[f"{label}_jitter"]   = self._jitter(lms, self._prev[i])
+                wv, wj, ok = self._arm_quality(lms, self._prev[i])
+                row[f"{label}_wrist_vis"]  = wv
+                row[f"{label}_wrist_jump"] = wj
+                row[f"{label}_arm_ok"]     = ok
                 self._prev[i] = lms
             else:
                 row[f"{label}_vis_mean"] = ""
                 row[f"{label}_vis_min"]  = ""
                 row[f"{label}_jitter"]   = ""
+                row[f"{label}_wrist_vis"]  = ""
+                row[f"{label}_wrist_jump"] = ""
+                row[f"{label}_arm_ok"]     = ""
 
             row[f"{label}_weapon"] = int(
                 any(r.get("line") is not None for r in weapon_per_fighter[i])
@@ -150,6 +171,24 @@ class StatsCollector:
 
     # ------------------------------------------------------------------
 
+    def _arm_quality(self, lms, prev_lms):
+        """Return (min wrist visibility, max wrist jump in torso lengths, arm_ok 0/1)."""
+        wrist_vis = min((lms[i].visibility or 0) for i in self._LM_WRISTS)
+        elbow_vis = min((lms[i].visibility or 0) for i in self._LM_ELBOWS)
+        # Torso length: mid-shoulder to mid-hip, in pixels
+        sx = (lms[11].x + lms[12].x) / 2 * self._fw;  sy = (lms[11].y + lms[12].y) / 2 * self._fh
+        hx = (lms[23].x + lms[24].x) / 2 * self._fw;  hy = (lms[23].y + lms[24].y) / 2 * self._fh
+        torso = max(math.hypot(sx - hx, sy - hy), 1.0)
+        jump = ""
+        if prev_lms is not None:
+            jump = max(
+                math.hypot((lms[i].x - prev_lms[i].x) * self._fw, (lms[i].y - prev_lms[i].y) * self._fh)
+                for i in self._LM_WRISTS
+            ) / torso
+        ok = int(wrist_vis >= self._ARM_VIS_OK and elbow_vis >= self._ARM_VIS_OK
+                 and (jump == "" or jump <= self._WRIST_JUMP_MAX))
+        return round(wrist_vis, 3), (round(jump, 3) if jump != "" else ""), ok
+
     def _jitter(self, new_lms, prev_lms):
         if prev_lms is None:
             return ""
@@ -197,6 +236,9 @@ class StatsCollector:
             "b_jitter_mean":  mean(r["b_jitter"]    for r in self._rows),
             "a_weapon_%":     pct(r["a_weapon"]     for r in self._rows),
             "b_weapon_%":     pct(r["b_weapon"]     for r in self._rows),
+            # % of frames WITH a pose where the arms are usable
+            "a_arm_ok_%":     pct(r.get("a_arm_ok", "") for r in self._rows),
+            "b_arm_ok_%":     pct(r.get("b_arm_ok", "") for r in self._rows),
         }
 
 
