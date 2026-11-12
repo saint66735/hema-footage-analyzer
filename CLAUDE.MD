@@ -27,7 +27,7 @@ Full plan document: https://claude.ai/artifact/4dQKjNFETAGFykP2WiPKhq
 CLI:
 
 ```
-python main.py --input <video> [--output <video>] [--max-frames N]
+python main.py --input <video> [--output <video>] [--max-frames N] [--fighters A B]
 python segment.py --stats output/<name>_stats.csv
 ```
 
@@ -50,7 +50,9 @@ GPU: RTX 3060 Ti (8 GB). `.venv` uses the CUDA build of PyTorch.
 
 - Iteration 1b (person-first pose, manual seed + tracking, wrist-anchored weapon) — signed off 2026-06-23.
 - Known issues from the four test clips:
-  - Douglas vs Simas: fighter A lost for ~50% of frames.
+  - Douglas vs Simas: fighter A lost for ~50% of frames. **Fixed 2026-11-12** (long-gap re-ID in tracker.py): now 90–100% tracked on all four clips.
+  - Arm quality measured 2026-11-12 (`arm_ok` in stats): arms usable on only ~1–40% of pose frames, mostly because at least one wrist has low visibility. Confirms the custom blade model decision.
+  - Seed box numbers for re-runs (`--fighters`): Simas 0 1, Gabija 0 1, PXL_..144004670 1 3, PXL_..145135970 3 2.
   - Blade "detected" on ~100% of frames — almost certainly many false positives.
   - Arm/wrist tracking fails regularly, which breaks the wrist-anchored blade search.
   - Guard classifier heavily favours Pflug/Alber; Ochs/Vom Tag rarely appear.
