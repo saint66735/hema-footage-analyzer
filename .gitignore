@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Footage and generated outputs (large, not code)
+training footage/
+output/
+*.mp4
+*.mov
+*.avi
+
+# Model weights (downloaded or trained, large binaries)
+*.pt
+*.task
+runs/
