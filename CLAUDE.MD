@@ -4,91 +4,95 @@
 
 Personal HEMA fight analysis tool. Longsword only, Meyer/Liechtenauer system. Built for personal use — not a general product. I (the project owner) am not proficient in Python; Claude Code handles all implementation.
 
-Footage: single stationary camera, full tournament fights, sometimes at awkward (~45°) angles.
+Footage: single stationary camera, full tournament fights, sometimes at awkward (~45°) angles. One venue has a **mirror wall** that reflects fighters, judges and bystanders — never run a generic detector on the full frame and trust every person it finds.
 
-## Current stage: Iteration 1
-
-We are validating whether pose and weapon detection are usable on real footage before building anything further. **Do not build segmentation, classification, notation, the fighter-identity question, or any UI until this iteration is validated against real footage and explicitly signed off.**
-
-### Goal
-
-Take a raw fight video, output a new video file with pose and weapon detection drawn on top, so detection quality can be judged by eye.
-
-### CLI
+End goal (MVP): raw fight video in → timestamped timeline of exchanges in relational notation out, e.g.
 
 ```
-python main.py --input <path_to_video> --output <path_to_output_video>
+[00:23] Exchange 3
+  L: Cut high right — initiated (vor)
+  R: Intercept — Indes
+  L: Counter in bind
+  Outcome: inconclusive
 ```
 
-### Pipeline, per frame
+MVP success test: run a fight I remember well; the timeline gets the broad strokes right.
 
-1. MediaPipe pose estimation — extract body landmarks for visible people
-2. YOLOv8 weapon detection — best-effort longsword/blade detection (no off-the-shelf model is trained on historical swords; poor or absent detection is expected — surface it, don't hide it)
-3. Draw pose skeleton over each detected person
-4. Draw a box or line over any detected weapon
-5. Color-code skeleton by detection confidence (green/yellow/red) so degraded tracking is visible, not silent
-6. Write annotated frame to output video
+Working rule: validate each layer on real footage before building on top of it. Every phase ends with a gate I check.
 
-### File structure
+Full plan document: https://claude.ai/artifact/4dQKjNFETAGFykP2WiPKhq
+
+## Current pipeline (what exists in code)
+
+CLI:
 
 ```
-hema_tool/
-├── main.py          # CLI entrypoint, orchestrates the pipeline
-├── pose.py          # MediaPipe wrapper — landmark extraction per frame
-├── weapon.py        # YOLOv8 wrapper — weapon detection per frame
-├── overlay.py       # Draws skeleton + weapon overlay + confidence coloring
-├── video_io.py      # Frame read/write via OpenCV
-└── requirements.txt
+python main.py --input <video> [--output <video>] [--max-frames N]
+python segment.py --stats output/<name>_stats.csv
 ```
 
-Keep modules separable — `weapon.py` in particular will likely need heuristics or fine-tuning later, and that should stay isolated from the rest of the pipeline.
+`main.py`, per frame:
+1. `person.py` — YOLOv8 `person` detection + ByteTrack IDs
+2. `tracker.py` — follows the two fighters I pick by hand on the seed frame (IOU + colour-histogram re-ID). Manual seed avoids judges, bystanders and mirror reflections.
+3. `pose.py` — MediaPipe PoseLandmarker run separately inside each fighter's box
+4. `weapon.py` — wrist-anchored blade search (Canny + Hough near the wrists, motion-masked, temporally smoothed). **To be replaced** by a custom model (see Phase 2).
+5. `guards.py` — rule-based guard classifier (Vom Tag, Ochs, Pflug, Alber, Langort). Weak first draft, built ahead of plan; kept, reworked in Phase 4.
+6. `motion.py` — camera-motion estimate; `overlay.py` — drawing; `video_io.py` — frame I/O
+7. `stats.py` — per-frame stats CSV (tracking, pose visibility, jitter, weapon, distances, guards)
 
-### Technical notes
+`segment.py` — post-processes the stats CSV into exchange windows (first draft).
 
-- No background subtraction needed yet
-- If a frame produces no usable pose (occlusion, motion blur, bad angle), don't crash — skip overlay or mark it clearly, and continue
-- Performance is not a concern yet — correctness and visibility of detection quality matters more than speed
+Git: the folder is a git repo. Footage (`training footage/`), outputs (`output/`) and model weights (`*.pt`, `*.task`) are git-ignored.
 
-### Success criteria for this iteration
+GPU: RTX 3060 Ti (8 GB). `.venv` uses the CUDA build of PyTorch.
 
-Watching the output video, I can answer by eye:
-- Does the skeleton roughly track each fighter through footwork, cuts, and binds?
-- Does the weapon overlay track the blade at all, lose it constantly, or false-positive on other things?
-- Does the confidence coloring line up with frames that visibly look wrong?
+## Status
 
----
+- Iteration 1b (person-first pose, manual seed + tracking, wrist-anchored weapon) — signed off 2026-06-23.
+- Known issues from the four test clips:
+  - Douglas vs Simas: fighter A lost for ~50% of frames.
+  - Blade "detected" on ~100% of frames — almost certainly many false positives.
+  - Arm/wrist tracking fails regularly, which breaks the wrist-anchored blade search.
+  - Guard classifier heavily favours Pflug/Alber; Ochs/Vom Tag rarely appear.
 
-## Iteration 1 results & known issues (as of first real test)
+**Current phase: Phase 1 — Detection fixes.**
 
-Ran on real tournament footage (26,908 frames). Results:
-- Pose detection: missing on 11.7% of frames, otherwise solid on whichever person(s) it locks onto
-- **Problem: only finds 1, sometimes 2, people inconsistently.** MediaPipe's standard Pose solution is single-person by design — it isn't reliably finding multiple distinct people because nothing is feeding it separate per-person regions.
-- **Problem: weapon detection nearly absent** — 130 detections across 26,908 frames. No stock YOLO model has a sword/blade class; whatever proxy was used isn't working.
-- **Environmental hazard discovered: the room has a mirror wall in the background.** It reflects fighters, bystanders, and judges. Any generic person/object detector run on the full frame will detect reflections as if they were real people. This must be accounted for, not just multi-person detection in general.
+## Phase plan (agreed 2026-11-12)
 
-### Iteration 1b — fixes required
+Do not build ahead of the current phase without my sign-off.
 
-1. **Person detection before pose.** Run YOLOv8's stock `person` class detector on the frame first to get a bounding box per person (this class is well-trained, unlike weapons). Run MediaPipe Pose separately inside each detected box, rather than relying on MediaPipe to find multiple people on its own.
-2. **Manual seed-and-track for fighter identification.** On frame 1 (or first valid frame), the user clicks/selects the two bounding boxes that are the real fighters. A simple IOU-based tracker follows those two specific boxes through the rest of the video. This both solves "fighters vs. judges/bystanders" and avoids the mirror-reflection problem, since reflections are never selected in the first place. Do not attempt automatic fighter detection (motion energy, spatial zones, etc.) yet — manual seed is simpler and more reliable for this stage.
-3. **Wrist-anchored weapon detection.** Abandon whole-frame weapon search. Instead, anchor to the wrist landmarks already produced by pose, and search a small region radiating from each wrist for a long straight line (e.g. Hough line transform on edges in that local region). This ties weapon detection to something pose already gives reliably and narrows the search space drastically.
-4. Fine-tuning a custom-trained sword detection model is explicitly **out of scope** for this iteration — heuristic only.
+0. **Housekeeping** — git, this file, `--max-frames`, CUDA PyTorch. *Done.*
+1. **Detection fixes** — fix the Douglas vs Simas tracking loss; measure how often arm tracking fails. Gate: both fighters tracked through all four clips.
+1.5. **Reference labels** — all four current clips are the reference set. Build a small labelling helper (clicking, not spreadsheets). I mark exchange start/end, initiator, outcome, guards on sampled frames, and each sword's hilt + tip on a few hundred frames. Gate: a labels file per clip + a sword training set.
+2. **Custom blade model** — fine-tune a pre-trained YOLO model to find each sword's hilt and tip directly in the frame, not anchored to the arms. Gate: blade found on most held-back frames with few false positives; otherwise label more and retrain.
+3. **Exchange segmentation** — tune `segment.py` against my labels; add fighter distance and blade motion alongside body motion. Gate: ~80% of marked exchanges found, few false ones, start times within ~0.5 s.
+4. **Guard recognition** — rework `guards.py` against labelled frames, use blade angle, smooth over time, add Lauerhut (club variant: blade against chest, hands at hips). Prefer "unknown" over a forced guard. Gate: right guard on most labelled frames.
+5. **Per-exchange analysis** — in order of reliability: initiator → high/low, left/right → cut/thrust → single/compound tempo → relational tags (vor / Indes / counter / void / afterblow / simultaneous / reset). Gate: initiator matches my labels most of the time; other fields carry a confidence and are flagged when unsure.
+6. **Timeline + feedback loop** — text timeline; the single question "Are you in this video: left, right, or no?"; for each exchange the tool proposes outcome and tags, I confirm or correct, and corrections are saved and fed back (rule tuning + more blade training data). Gate: the MVP test.
 
-## Future phases (not in scope yet — do not build ahead of these)
+After the MVP: named technique identification → personal profile → full vocabulary system with human-in-the-loop labelling.
 
-1. Exchange segmentation — detect movement bursts vs resets, timestamp exchanges
-2. Per-exchange analysis — initiator, action type, direction, tempo, relational tags (vor/Indes/counter/void/afterblow/simultaneous/reset), outcome
-3. Guard recognition library — geometric rules per guard
-4. Named technique identification (optional enrichment layer)
-5. Personal profile built from analyzed footage
-6. Full vocabulary system with human-in-the-loop labeling
+## Decisions (2026-11-12)
 
-A separate vocabulary doc (guards, actions, bind states, tactical states, outcomes, named techniques) is being developed in parallel and will become relevant from Phase 3 onward. Not needed yet.
+- Keep the existing guard code as a first draft.
+- Guard recognition comes before per-exchange analysis.
+- Outcomes come from a feedback loop (tool proposes, I confirm/correct), not from detection alone.
+- Blade detection: train a custom model — **now in scope** (the earlier "heuristic only" rule is lifted).
+- Reference set: all four clips in `training footage/`.
 
-## Explicit non-goals (full project, not just this iteration)
+## Technical notes
 
-- No user profile
-- No opponent profile
-- No named technique identification (until Phase 3)
+- If a frame produces no usable pose (occlusion, blur, bad angle), don't crash — mark it and continue.
+- Surface degraded detection visibly (confidence colouring, flags); never hide it.
+- Keep modules separable; `weapon.py` stays isolated so the model can be swapped in.
+- Performance is secondary to correctness and visibility of detection quality.
+
+A separate vocabulary doc (guards, actions, bind states, tactical states, outcomes, named techniques) is being developed in parallel; relevant from Phase 4 onward.
+
+## Explicit non-goals (whole project)
+
+- No user or opponent profile (until the post-MVP phase)
+- No named technique identification (until after the MVP)
 - No multi-camera support
-- No onboarding beyond the eventual fighter-identity question
+- No onboarding beyond the fighter-identity question
 - No system/weapon configuration (longsword + Meyer/Liechtenauer is hardcoded)

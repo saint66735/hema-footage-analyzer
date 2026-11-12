@@ -97,6 +97,8 @@ def parse_args():
     p.add_argument("--input",  required=True, help="Path to input video file")
     p.add_argument("--output", default=None,
                    help="Path for output annotated video (default: ./output/<input_stem>_annotated.mp4)")
+    p.add_argument("--max-frames", type=int, default=None,
+                   help="Only process the first N frames (for quick tests on long fights)")
     return p.parse_args()
 
 
@@ -135,6 +137,9 @@ def main():
     tracker = FighterTracker(box_a, box_b, seed_frame)
 
     total     = reader.total_frames or 1
+    if args.max_frames is not None:
+        total = max(1, min(total, args.max_frames))
+        print(f"Limiting to first {total} frames (--max-frames)")
     prev_gray = None
     pose_found = [0, 0]
 
@@ -143,6 +148,8 @@ def main():
 
     with reader, VideoWriter(args.output, reader.fps, reader.width, reader.height) as writer:
         for frame_idx, frame in enumerate(reader.frames()):
+            if args.max_frames is not None and frame_idx >= args.max_frames:
+                break
             if frame_idx % 30 == 0:
                 pct = frame_idx / total * 100
                 print(f"\r  frame {frame_idx:>6}/{total}  ({pct:5.1f}%)", end="", flush=True)
